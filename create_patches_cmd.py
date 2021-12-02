@@ -31,18 +31,16 @@ def get_num_days(year_1, year_2):
     print(delta.days+1)
     return delta.days+1
 
-def build_norm(offset):
-    # set two years
-    num_day = 730
+def build_norm():
+    
     #offset = 11323 # starting 1981
     #offset = 20001
 
-    start_year = 2010
-    end_year = 2020
+    start_year = 1981
+    end_year = 1991
 
-    #ds = xarray.open_mfdataset("chirps-v2.0.*.nc", concat_dim="time", combine='nested')
     filename_list = [
-        f"data/chirps-v2.0.{year}.days_p05_CORDEX_CAM.nc"
+        f"/data/440w/bke5075/Data/raw/raw_data/chirps-v2.0.{year}.days_p05_CORDEX_CAM.nc"
         for year in range(start_year, end_year+1)
     ]
     num_day = get_num_days(start_year, end_year)
@@ -53,17 +51,18 @@ def build_norm(offset):
     print("num_day", num_day)
     print("offset", offset)
 
-    ds = xarray.open_mfdataset(filename_list, concat_dim="time", combine='nested', parallel=True)
-    ds.to_netcdf("high_allYears.nc")
+    #ds = xarray.open_mfdataset(filename_list, concat_dim="time", combine='nested', parallel=True)
+    #ds.to_netcdf("high_allYears.nc")
 
     nc_f_high = 'high_allYears.nc'
     nc_high = Dataset(nc_f_high, 'r')  # Dataset is the class behavior to open the file    
-    print(nc_high)
-    prcp_high = nc_high.variables['precip'][:]
+    #print(nc_high)
+    prcp_high = nc_high.variables['precip'][:num_day]
 
-    nc_f_low="precipitation_daily_1950-2020.nc"
+
+    nc_f_low="/data/440w/bke5075/Data/raw/raw_data/precipitation_daily_1950-2020.nc"
     nc_low = Dataset(nc_f_low, 'r')  # Dataset is the class behavior to open the file
-    print(nc_low)
+    #print(nc_low)
 
     # 1950-01-01 - 1980-12-31 ==> 11323 days
     prcp_low = nc_low.variables['tp'][offset:offset+num_day]
@@ -72,12 +71,14 @@ def build_norm(offset):
     max_pixel_l=np.max(prcp_low)
     
     def normalise(sst, norm_constant):
-      sst=sst/norm_constant
+      sst = sst/norm_constant
       return sst
     
     # TODO: they should probably be normalized using the same constant (?) 
     prcp_high_norm=normalise(prcp_high, max_pixel_h)
+    del prcp_high
     prcp_low_norm=normalise(prcp_low, max_pixel_l)
+    del prcp_low
    
     print("low.shape", prcp_low_norm.shape)
     print("high.shape", prcp_high_norm.shape)
@@ -152,11 +153,9 @@ def run_create_patches(offset):
     prcp_high_norm, prcp_low_norm = load_prcp_scaled(offset=offset)
 
     patch_size=(33, 33)
-    max_patches = 300000
-    #num_fields_end = 14610 # Need to define how long our input will be
-    #num_fields_end = 730 # Need to define how long our input will be
+    max_patches = 50000
     num_fields_end = prcp_high_norm.shape[0] # Need to define how long our input will be
-    total = min(200000, max_patches*num_fields_end)
+    total = min(300_000, max_patches*num_fields_end)
     
     X, Y, values, days=create_patches(patch_size, max_patches, prcp_low_norm, prcp_high_norm, num_fields_end, total)
     print(values)
@@ -168,11 +167,11 @@ def run_create_patches(offset):
     print(X[10])
     print(Y[10])
 
-    h5f = h5py.File(f'low_patches_{offset}.h5', 'w')
+    h5f = h5py.File(f'low_patches{values}_{offset}.h5', 'w')
     h5f.create_dataset('samples', data=X)
     h5f.close()
     
-    h5f = h5py.File(f'high_patches_{offset}.h5', 'w')
+    h5f = h5py.File(f'high_patches{values}_{offset}.h5', 'w')
     h5f.create_dataset('samples', data=Y)
     h5f.close()
 
@@ -182,33 +181,35 @@ def modify_upscale(offset):
     prcp_high_norm, prcp_low_norm = load_prcp_norm(offset=offset)
 
     # fill-in-zeros for missing values
-    high = prcp_high_norm.data
-    high[prcp_high_norm.mask] = 0.0
+    high_ = prcp_high_norm.data
+    high_[prcp_high_norm.mask] = 0.0
 
-    low = prcp_low_norm.data
-    low[prcp_low_norm.mask] = 0.0
+    low_ = prcp_low_norm.data
+    low_[prcp_low_norm.mask] = 0.0
 
     # upscale using INTER_CUBIC 
     results = []
-    target_size = high.shape[1:]
-    for index in tqdm(np.arange(low.shape[0]), total=low.shape[0], desc="Resizing"):
-        low_per_day = low[index, :, :]
+    target_size = high_.shape[1:]
+    for index in tqdm(np.arange(low_.shape[0]), total=low_.shape[0], desc="Resizing"):
+        low_per_day = low_[index, :, :]
         resized_low = cv2.resize(low_per_day, target_size, interpolation=cv2.INTER_CUBIC)
         results.append(resized_low.reshape([1, *target_size]))
 
     # merge to get low-all
-    resized_low = np.concatenate(results, axis=0)
+    resized_low = np.concatenate(results, axis=0).astype(np.float16)
+    del low_
     print(resized_low.shape)
-    print(high.shape)
+    print(high_.shape)
 
     # turn to float-16
-    high = high.astype(np.float16)
-    low = low.astype(np.float16)
+    high = high_.astype(np.float16)
+    del high_
+    #low = resized_low.astype(np.float16)
 
     with open(f"prcp_scaled-{offset}.joblib", 'wb') as outfile:
         joblib.dump({
             "high": high,
-            "low": low,
+            "low": resized_low,
             "mask": prcp_high_norm.mask,
         }, outfile)
 
@@ -218,11 +219,10 @@ if __name__ == "__main__":
     quit()
     """
 
-    #offset = 11323 # starting 1981
+    offset = 11323 # starting 1981
     #offset = 23741 # 2015-2019
-    offset = 21915 # 2010 - 2020
-
-    #build_norm(offset=None)
-    modify_upscale(offset)
+    
+    #build_norm()
+    #modify_upscale(offset)
     run_create_patches(offset)
 

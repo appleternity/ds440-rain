@@ -51,6 +51,11 @@ from tensorflow.keras import backend as K
 from tensorflow.keras import Input
 from tensorflow import image
 from tensorflow import float32, constant_initializer
+import tensorflow
+
+gpus = tensorflow.config.experimental.list_physical_devices('GPU')
+for gpu in gpus:
+    tensorflow.config.experimental.set_memory_growth(gpu, True)
 
 input_shape=(33,33,1)
 batch_size=64
@@ -132,7 +137,7 @@ def gen(features, labels, batch_size, patch_size):
      #quit()
    yield batch_features, batch_labels
 
-path="ckpts1/"+"cp-{epoch:04d}.ckpt"
+path="ckpts4/"+"cp-{epoch:04d}.ckpt"
 checkpoint_dir = os.path.dirname(path)
 
 # Create a callback that saves the model's weights every 5 epochs
